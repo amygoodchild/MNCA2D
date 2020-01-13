@@ -1,0 +1,299 @@
+#pragma kernel ResetKernel
+#pragma kernel StepKernel
+
+Texture2D<float> readTex;
+SamplerState sampler_readTex;
+
+RWTexture2D<float> writeTex;
+RWTexture2D<float4> outTex;
+
+// This texture is used in the thing where I use seed images instead of 
+// random noise to start. 
+RWTexture2D<float4> inTex;
+
+int rez;
+
+uint threshold;
+uint nstates;
+
+float colorALow;
+float colorAHigh;
+float colorBLow;
+float colorBHigh;
+
+float minBrightness;
+float minSaturation;
+float maxBrightness;
+float maxSaturation;
+
+// Even though I'm passing in arrays of Vector4s, they slot into these arrays of
+// float2s just fine. 
+float2 neighborhood0[400];
+float2 neighborhood1[400];
+float2 neighborhood2[400];
+float2 neighborhood3[400];
+
+bool count0direction1;
+bool count1direction1;
+bool count2direction1;
+bool count3direction1;
+bool count0direction2;
+bool count3direction2;
+
+int count0min1;
+int count0max1;
+int count1min1;
+int count1max1;
+int count2min1;
+int count2max1;
+int count3min1;
+int count3max1;
+int count0min2;
+int count0max2;
+int count3min2;
+int count3max2;
+
+
+/*
+ *
+ *
+ *RESET
+ *
+ *
+ */
+
+
+
+//  Function from Iñigo Quiles
+//  https://www.shadertoy.com/view/MsS3Wc
+//  via: https://thebookofshaders.com/06/
+float4 hsb2rgb(float3 c) {
+    float3 rgb = clamp(abs(((c.x * 6.0 + float3(0.0, 4.0, 2.0)) % 6.0) - 3.0) - 1.0, 0.0, 1.0);
+    rgb = rgb * rgb * (3.0 - 2.0 * rgb);
+    float3 o = c.z * lerp(float3(1.0, 1.0, 1.0), rgb, c.y);
+    return float4(o.r, o.g, o.b, 1);
+}
+
+// Used this to work out hue/sat/brightness values to use in my seed thing
+float3 rgb2hsb( in float3 c ){
+    float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    float4 p = lerp(float4(c.bg, K.wz),
+                 float4(c.gb, K.xy),
+                 step(c.b, c.g));
+    float4 q = lerp(float4(p.xyw, c.r),
+                 float4(c.r, p.yzx),
+                 step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return float3(abs(q.z + (q.w - q.y) / (6.0 * d + e)),
+                d / (q.x + e),
+                q.x);
+}
+
+// via "The Art of Code" on Youtube
+float2 Random(float2 p) {
+    float3 a = frac(p.xyx * float3(123.34, 234.34, 345.65));
+    a += dot(a, a + 34.45);
+    return frac(float2(a.x * a.y, a.y * a.z));
+}
+
+// Using this in my color implementation stuff
+float map(float value, float fromLow, float fromHigh, float toLow, float toHigh) 
+{
+    return (value - fromLow) * (toHigh - toLow) / (fromHigh - fromLow) + toLow;
+}
+
+
+
+[numthreads(1, 1, 1)]
+void ResetKernel(uint3 id: SV_DispatchThreadID)
+{
+    // generates random state for each pixel
+    writeTex[id.xy] = (int)(Random(id.xy * 0.01).x * nstates);
+  
+
+    /*
+    // This does the ssed image thing instead of random noise. 
+    float3 myRGB = float3(inTex[id.xy].x, inTex[id.xy].y, inTex[id.xy].z );
+    float3 myHSB = rgb2hsb(myRGB);
+
+    writeTex[id.xy] = map(myHSB.x, 0, 1, 0, nstates);
+    */
+    
+}
+
+/*
+*
+* STEP
+*
+*
+*/
+
+
+void Render(uint3 id, float state, uint count){
+     // Maps state to between 0 and 1.
+    float s = map(state, 0, nstates, 0.0f, 0.3f);   
+
+    // This doesn't work too well with multipleneighbour hoods because the max count varies so much
+    // for each neighbourhood, so it's not very effective 
+
+    float c = map(count, 0, 360, 0.0f, 1.0f);
+    
+    // Different colour options:
+
+    // Basic - Greyscale, directly related to state
+    if (false) {
+        outTex[id.xy] = s;
+    }
+
+    float3 hsb = float3(0, .8, 0.4);
+
+    // Basic Color - hue mapped to state
+    if (false) {
+        hsb.x = s;
+        outTex[id.xy] = hsb2rgb(hsb);
+    }
+
+    // Hue mapped to state, saturation mapped to brightness. Not super effective.
+    if (false) {
+        hsb.x = s;
+        hsb.y = c;
+        outTex[id.xy] = hsb2rgb(hsb);
+    }
+
+    // Range Color - hue is related to state, but split between two definable bands.
+    if (true) {
+        hsb.x = s;
+       
+        if (hsb.x > 0.2){
+            hsb.x = map(hsb.x, 0.2, 1, colorALow, colorAHigh);  
+        }
+        else{
+           hsb.x = map(hsb.x, 0.2, 1, colorBLow, colorBHigh);  
+        }
+        outTex[id.xy] = hsb2rgb(hsb);
+    }
+
+    ////////////////////////////////////////////
+    // Crop
+    // float d = distance(float2(rez / 2.0, rez / 2.0), id.xy) / (rez / 2.0);
+    //outTex[id.xy] *= smoothstep(.9, .8, d);
+}
+
+
+[numthreads(1, 1, 1)]
+void StepKernel(uint3 id: SV_DispatchThreadID)
+{
+   	// READ STATE
+    uint state = readTex[id.xy];
+
+    uint count0 = 0;
+    uint count1 = 0;
+    uint count2 = 0;
+    uint count3 = 0;
+    
+    uint next = state + 1 == nstates ? 0 : state + 1; // (preserves higher states)
+
+    // Loops 360 times because that's the largest neighbourhood size.
+    for (int i=0; i < 360; i++){
+        // Neighborhood0 only has 225 slots though, so only check that if i is under 225. 
+        if (i<225){
+            // Checks state of neighbor pixel, if it's equal to localstate+1, then increment the
+            // count for this neighborhood.
+            uint s = readTex.SampleLevel(sampler_readTex, (id.xy + neighborhood0[i]) / (float)rez, 0);
+            count0 += (uint) (s==next);
+        }
+
+        // Neighborhood1 has 24 states
+        if (i<24){
+            uint s = readTex.SampleLevel(sampler_readTex, (id.xy + neighborhood1[i]) / (float)rez, 0);
+            count1 += (uint) (s==next);
+        }
+
+        // Neighborhood2 has 84 states
+        if (i<84){
+            uint s = readTex.SampleLevel(sampler_readTex, (id.xy + neighborhood2[i]) / (float)rez, 0);
+            count2 += (uint) (s==next);
+        }
+        
+        uint s = readTex.SampleLevel(sampler_readTex, (id.xy + neighborhood3[i]) / (float)rez, 0);
+        count3 += (uint) (s==next);
+    }
+    
+    // I am sure there is a much better way to do this SORRY
+
+    // If the count is in the range
+    if (count0 >= count0min1  && count0 <= count0max1) { 
+        // Then check which direction we should go in 
+        if (count0direction1){
+            state++ % nstates; 
+        }
+        else{
+            state-- % nstates;
+        }
+    }
+    if (count0 >= count0min2 && count0 <= count0max2) { 
+        if (count0direction2){
+            state++ % nstates; 
+        }
+        else{
+            state-- % nstates;
+        }
+    }   
+    
+    if (count1 >= count1min1 && count1 <= count1max1){ 
+        if (count1direction1){
+            state++ % nstates; 
+        }
+        else{
+            state-- % nstates;
+        }
+    }
+
+    if (count2 >= count2min1  && count2 <= count2max1) { 
+        if (count2direction1){
+            state++ % nstates; 
+        }
+        else{
+            state-- % nstates;
+        }
+    }
+
+    if (count3 >= count3min1 && count3 <= count3max1) { 
+        if (count3direction1){
+            state++ % nstates; 
+        }
+        else{
+            state-- % nstates;
+        }
+    }
+    if (count3 >= count3min2 && count3 <= count3max2){ 
+        if (count3direction2){
+            state++ % nstates; 
+        }
+        else{
+            state-- % nstates;
+        }
+    }
+
+
+    // Because these are one after the other, precedence ends up being given to the later rules.
+    // If the last rule is true, that thing will happen. Other people have had more interesting
+    // ways of dealing with this but I haven't implemented any yet. 
+
+    // WRITE STATE
+    writeTex[id.xy] = state;
+
+    // Added up all the counts incase I wanted to use it in colour rendering. 
+    int megaCount = count0 + count1 + count2 + count3;
+
+    Render(id, state, megaCount);
+
+    megaCount = 0;
+
+} 
+
+
+
+
+
